@@ -386,7 +386,7 @@ class GooglePhotosAPIService {
 	 * @throws \OCP\Files\NotPermittedException
 	 */
 	private function getPhoto(string $userId, array $photo, Folder $folder): ?int {
-		$photoName = preg_replace('/\//', '_', $photo['filename'] ?? 'Untitled');
+		$photoName = $this->getPhotoName($photo);
 		if (isset($photo['mediaMetadata']['creationTime'])) {
 			$d = new Datetime($photo['mediaMetadata']['creationTime']);
 			$year = $d->format('Y');
@@ -450,6 +450,25 @@ class GooglePhotosAPIService {
 				$savedFile->unlock(ILockingProvider::LOCK_EXCLUSIVE);
 				$savedFile->delete();
 			}
+		}
+	}
+
+	private function getPhotoName(array $photo): string {
+		$upstream = preg_replace('/\//', '_', $photo['filename'] ?? 'Untitled');
+		if(strpos($upstream,'.')) {
+			return $upstream;
+		}
+
+		$extension = $this->getMimeExtension($photo['mimeType']);
+		return $upstream . $extension;
+	}
+
+	private function getMimeExtension(string $mimeType): string {
+		switch($mimeType) {
+			case "image/jpeg":
+				return ".jpg";
+			default:
+				return '.' . explode('/', $mimeType)[1];
 		}
 	}
 }
