@@ -118,25 +118,23 @@ class GooglePhotosAPIService {
 
 		// check if there is any photo outside albums
 		// (number is not relevant here as we just make one paginated request to avoid reaching request limit)
-		if ($nbPhotos === 0) {
-			$params = [
-				'pageSize' => 50,
-			];
+		$params = [
+			'pageSize' => 50,
+		];
 
-			$result = $this->googleApiService->request($userId, 'v1/mediaItems', $params, 'GET', 'https://photoslibrary.googleapis.com/');
-			if (isset($result['error'])) {
-				return $result;
-			}
+		$result = $this->googleApiService->request($userId, 'v1/mediaItems', $params, 'GET', 'https://photoslibrary.googleapis.com/');
+		if (isset($result['error'])) {
+			return $result;
+		}
 
-			if (isset($result['mediaItems']) && is_array($result['mediaItems'])) {
-				$nbPhotos += count($result['mediaItems']);
-			} else {
-				$this->logger->warning(
-					'Google API error getting media items list to get photo number, no "mediaItems" key in '
-					. json_encode($result),
-					['app' => Application::APP_ID]
-				);
-			}
+		if (isset($result['mediaItems']) && is_array($result['mediaItems'])) {
+			$nbPhotos += count($result['mediaItems']);
+		} else {
+			$this->logger->warning(
+				'Google API error getting media items list to get photo number, no "mediaItems" key in '
+				. json_encode($result),
+				['app' => Application::APP_ID]
+			);
 		}
 
 		return [
@@ -302,14 +300,6 @@ class GooglePhotosAPIService {
 		foreach ($albums as $album) {
 			$albumId = $album['id'];
 			$albumName = preg_replace('/\//', '_', $album['title'] ?? 'Untitled');
-			if (!$folder->nodeExists($albumName)) {
-				$albumFolder = $folder->newFolder($albumName);
-			} else {
-				$albumFolder = $folder->get($albumName);
-				if ($albumFolder->getType() !== FileInfo::TYPE_FOLDER) {
-					return ['error' => 'Impossible to create album folder'];
-				}
-			}
 
 			$params = [
 				'pageSize' => 100,
@@ -324,7 +314,7 @@ class GooglePhotosAPIService {
 					foreach ($result['mediaItems'] as $photo) {
 						$seenIds[] = $photo['id'];
 						$totalSeenNumber++;
-						$size = $this->getPhoto($userId, $photo, $albumFolder);
+						$size = $this->getPhoto($userId, $photo, $folder);
 						if (!is_null($size)) {
 							$nbDownloaded++;
 							$this->config->setUserValue($userId, Application::APP_ID, 'nb_imported_photos', $alreadyImported + $nbDownloaded);
@@ -389,51 +379,77 @@ class GooglePhotosAPIService {
 	/**
 	 * @param string $userId
 	 * @param array $photo
-	 * @param Folder $albumFolder
+	 * @param Folder $folder
 	 * @return ?int downloaded size, null if already existing
 	 * @throws \OCP\Files\InvalidPathException
 	 * @throws \OCP\Files\NotFoundException
 	 * @throws \OCP\Files\NotPermittedException
 	 */
-	private function getPhoto(string $userId, array $photo, Folder $albumFolder): ?int {
+	private function getPhoto(string $userId, array $photo, Folder $folder): ?int {
 		$photoName = preg_replace('/\//', '_', $photo['filename'] ?? 'Untitled');
-		if (!$albumFolder->nodeExists($photoName)) {
-			if (isset($photo['mediaMetadata']['photo'])) {
-				$photoUrl = $photo['baseUrl'] . '=d';
-			} elseif (isset($photo['mediaMetadata']['video'])) {
-				$photoUrl = $photo['baseUrl'] . '=dv';
+		if (isset($photo['mediaMetadata']['creationTime'])) {
+			$d = new Datetime($photo['mediaMetadata']['creationTime']);
+			$year = $d->format('Y');
+			if (!$folder->nodeExists($year)) {
+				$folder = $folder->newFolder($year);
 			} else {
-				return null;
-			}
-			$savedFile = $albumFolder->newFile($photoName);
-			try {
-				$resource = $savedFile->fopen('w');
-			} catch (LockedException $e) {
-				$this->logger->warning('Google Photo, error opening target file ' . '<redacted>' . ' : file is locked', ['app' => Application::APP_ID]);
-				return null;
-			}
-			$res = $this->googleApiService->simpleDownload($userId, $photoUrl, $resource);
-			if (!isset($res['error'])) {
-				if (is_resource($resource)) {
-					fclose($resource);
+				$folder = $folder->get($year);
+				if ($folder->getType() !== FileInfo::TYPE_FOLDER) {
+					return ['error' => 'Impossible to create year folder'];
 				}
-				if (isset($photo['mediaMetadata']['creationTime'])) {
-					$d = new Datetime($photo['mediaMetadata']['creationTime']);
-					$ts = $d->getTimestamp();
-					$savedFile->touch($ts);
-				} else {
-					$savedFile->touch();
-				}
-				$stat = $savedFile->stat();
-				return $stat['size'] ?? 0;
+			}
+
+			$month = $d->format('m');
+			if (!$folder->nodeExists($month)) {
+				$folder = $folder->newFolder($month);
 			} else {
-				$this->logger->warning('Google API error downloading photo ' . '<redacted>' . ' : ' . $res['error'], ['app' => Application::APP_ID]);
-				if ($savedFile->isDeletable()) {
-					$savedFile->unlock(ILockingProvider::LOCK_EXCLUSIVE);
-					$savedFile->delete();
+				$folder = $folder->get($month);
+				if ($folder->getType() !== FileInfo::TYPE_FOLDER) {
+					return ['error' => 'Impossible to create month folder'];
 				}
 			}
 		}
-		return null;
+			
+		if ($folder->nodeExists($photoName)) {
+			return null;
+		}
+		
+		if (isset($photo['mediaMetadata']['photo'])) {
+			$photoUrl = $photo['baseUrl'] . '=d';
+		} elseif (isset($photo['mediaMetadata']['video'])) {
+			$photoUrl = $photo['baseUrl'] . '=dv';
+		} else {
+			return null;
+		}
+
+		$savedFile = $folder->newFile($photoName);
+		try {
+			$resource = $savedFile->fopen('w');
+		} catch (LockedException $e) {
+			$this->logger->warning('Google Photo, error opening target file ' . '<redacted>' . ' : file is locked', ['app' => Application::APP_ID]);
+			return null;
+		}
+
+		$res = $this->googleApiService->simpleDownload($userId, $photoUrl, $resource);
+		if (!isset($res['error'])) {
+			if (is_resource($resource)) {
+				fclose($resource);
+			}
+			if (isset($photo['mediaMetadata']['creationTime'])) {
+				$d = new Datetime($photo['mediaMetadata']['creationTime']);
+				$ts = $d->getTimestamp();
+				$savedFile->touch($ts);
+			} else {
+				$savedFile->touch();
+			}
+			$stat = $savedFile->stat();
+			return $stat['size'] ?? 0;
+		} else {
+			$this->logger->warning('Google API error downloading photo ' . '<redacted>' . ' : ' . $res['error'], ['app' => Application::APP_ID]);
+			if ($savedFile->isDeletable()) {
+				$savedFile->unlock(ILockingProvider::LOCK_EXCLUSIVE);
+				$savedFile->delete();
+			}
+		}
 	}
 }
